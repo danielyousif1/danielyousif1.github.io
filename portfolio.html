@@ -15,21 +15,12 @@
         .grid { display: grid; grid-template-columns: 2fr 1fr; gap: 25px; }
         .card { background: #1e293b; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.2); border: 1px solid #334155; }
         h3 { margin-top: 0; color: #f1f5f9; font-size: 1.3rem; border-bottom: 1px solid #334155; padding-bottom: 10px; }
-        .form-group { margin-bottom: 20px; display: flex; gap: 10px; flex-wrap: wrap; }
-        input, select, button { padding: 12px; background: #334155; border: 1px solid #475569; color: white; border-radius: 6px; font-size: 0.95rem; }
-        input[type="text"] { flex: 2; min-width: 150px; }
-        input[type="number"] { flex: 1; min-width: 100px; }
-        select { flex: 1; min-width: 110px; cursor: pointer; }
-        button { background: #0284c7; cursor: pointer; border: none; font-weight: 600; padding: 12px 20px; transition: background 0.2s; }
-        button:hover { background: #0369a1; }
         table { width: 100%; border-collapse: collapse; margin-top: 10px; }
         th, td { text-align: left; padding: 14px; border-bottom: 1px solid #334155; }
         th { color: #94a3b8; font-weight: 500; font-size: 0.85rem; text-transform: uppercase; }
-        td { font-size: 0.95rem; }
-        .btn-delete { background: #ef4444; padding: 6px 12px; font-size: 0.8rem; border-radius: 4px; }
-        .btn-delete:hover { background: #dc2626; }
         .chart-container { display: flex; justify-content: center; align-items: center; height: 300px; margin-top: 20px; }
         .loading { font-style: italic; color: #94a3b8; }
+        .status-badge { font-size: 0.85rem; padding: 4px 8px; border-radius: 4px; background: #334155; color: #94a3b8; }
     </style>
 </head>
 <body>
@@ -38,7 +29,7 @@
     <header>
         <div>
             <h1 style="margin: 0; font-size: 2rem;">Net Worth Navigator</h1>
-            <p style="margin: 5px 0 0 0; color: #94a3b8;">Live Static Portfolio Monitoring Engine</p>
+            <p style="margin: 5px 0 0 0; color: #94a3b8;">Syncing with repository <span class="status-badge" id="sync-status">data.csv checking...</span></p>
         </div>
         <div class="total-box">
             <span>Aggregate Value (USD)</span>
@@ -48,18 +39,7 @@
 
     <div class="grid">
         <div class="card">
-            <h3>Asset Ledger</h3>
-            <div class="form-group">
-                <input type="text" id="symbol" placeholder="Ticker (e.g., AAPL, ETH-USD, VRE.TO)" oninput="this.value = this.value.toUpperCase()">
-                <input type="number" id="shares" placeholder="Units Owned" step="any">
-                <select id="type">
-                    <option value="Stock">Stock / ETF</option>
-                    <option value="Crypto">Crypto</option>
-                    <option value="Bond">Fixed Income</option>
-                </select>
-                <button onclick="addAsset()">Add Asset</button>
-            </div>
-
+            <h3>Asset Ledger (Auto-Loaded)</h3>
             <table>
                 <thead>
                     <tr>
@@ -68,11 +48,11 @@
                         <th>Units</th>
                         <th>Live Price</th>
                         <th>Market Value</th>
-                        <th style="width: 50px;"></th>
                     </tr>
                 </thead>
                 <tbody id="portfolio-table">
-                    </tbody>
+                    <tr><td colspan="5" class="loading" style="text-align: center; padding: 30px;">Loading data source configuration...</td></tr>
+                </tbody>
             </table>
         </div>
 
@@ -86,28 +66,81 @@
 </div>
 
 <script>
-    // LocalStorage keeps your financial data isolated to your physical device
-    let portfolio = JSON.parse(localStorage.getItem('portfolio_assets')) || [];
+    let portfolio = [];
     let chartInstance = null;
 
-    // Live Price Fetcher utilizing a CORS-friendly public proxy or dedicated ticker API
+    // Helper to auto-categorize assets based on Yahoo conventions
+    function determineType(symbol) {
+        const s = symbol.toUpperCase();
+        if (s.endsWith("-USD")) return "Crypto";
+        if (s.includes("BND") || s.includes("AGG") || s.includes("TLT")) return "Bond";
+        return "Stock";
+    }
+
+    // Live Price Fetcher via Yahoo Finance proxy
     async function fetchLivePrice(symbol) {
         try {
-            // Clean ticker format
             const ticker = symbol.trim().toUpperCase();
-            
-            // Using a reliable open-source finance api proxy for direct browser calls
             const response = await fetch(`https://query1.finance.yahoo.com/v7/finance/chart/${ticker}?interval=1m&range=1d`);
-            if (!response.ok) throw new Error("API Network issue");
-            
+            if (!response.ok) throw new Error();
             const data = await response.json();
-            const meta = data.chart.result[0].meta;
-            return meta.regularMarketPrice;
+            return data.chart.result[0].meta.regularMarketPrice;
         } catch (error) {
-            console.warn(`Fallback triggered for ${symbol}. Check ticker formatting.`);
-            // Local fallback values if API rate limits hit or fails
             const fallbacks = { 'AAPL': 180.50, 'BTC-USD': 65000.00, 'ETH-USD': 3200.00, 'VOO': 475.00 };
             return fallbacks[symbol.toUpperCase()] || 100.00; 
+        }
+    }
+
+    // Core function to load CSV directly from repository root
+    async function loadRepositoryCSV() {
+        const statusBadge = document.getElementById('sync-status');
+        try {
+            // Fetch data.csv sitting relative to portfolio.html
+            const response = await fetch('data.csv');
+            if (!response.ok) throw new Error("Could not locate data.csv file in path.");
+            
+            const csvText = await response.text();
+            const lines = csvText.split('\n');
+            let parsedAssets = [];
+
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i].trim();
+                if (!line) continue;
+
+                const columns = line.split(',');
+                const symbol = columns[0].trim().toUpperCase();
+                const shares = parseFloat(columns[1]);
+
+                // Skip header line if present
+                if (symbol === "TICKER" || symbol === "SYMBOL" || isNaN(shares)) {
+                    continue;
+                }
+
+                if (symbol && !isNaN(shares)) {
+                    parsedAssets.push({
+                        symbol: symbol,
+                        shares: shares,
+                        type: determineType(symbol)
+                    });
+                }
+            }
+
+            portfolio = parsedAssets;
+            statusBadge.innerText = `data.csv active (${portfolio.length} records)`;
+            statusBadge.style.background = "#16a34a";
+            statusBadge.style.color = "white";
+            
+            await updatePortfolioUI();
+
+        } catch (error) {
+            console.error(error);
+            statusBadge.innerText = "data.csv missing or format error";
+            statusBadge.style.background = "#dc2626";
+            statusBadge.style.color = "white";
+            document.getElementById('portfolio-table').innerHTML = `
+                <tr><td colspan="5" class="loading" style="text-align: center; color: #f87171; padding: 30px;">
+                    Error: Ensure 'data.csv' is saved and committed directly in the root of your GitHub pages directory.
+                </td></tr>`;
         }
     }
 
@@ -115,38 +148,32 @@
         const tableBody = document.getElementById('portfolio-table');
         tableBody.innerHTML = '';
         let totalNetWorth = 0;
-        
         let allocationTotals = { Stock: 0, Crypto: 0, Bond: 0 };
 
         if (portfolio.length === 0) {
-            tableBody.innerHTML = `<tr><td colspan="6" class="loading" style="text-align: center; padding: 30px;">No holdings registered. Input parameters above.</td></tr>`;
-            document.getElementById('total-value').innerText = "$0.00";
-            renderChart(allocationTotals);
+            tableBody.innerHTML = `<tr><td colspan="5" class="loading" style="text-align: center; padding: 30px;">CSV parsed successfully but contained 0 valid active records.</td></tr>`;
             return;
         }
 
+        // Generate DOM skeletons
         for (let i = 0; i < portfolio.length; i++) {
             const asset = portfolio[i];
-            
-            // Render a placeholder row while awaiting async data fetch
-            const rowId = `asset-row-${i}`;
             tableBody.innerHTML += `
-                <tr id="${rowId}">
+                <tr id="asset-row-${i}">
                     <td><strong>${asset.symbol}</strong></td>
                     <td>${asset.type}</td>
-                    <td>${parseFloat(asset.shares).toLocaleString()}</td>
+                    <td>${asset.shares.toLocaleString(undefined, {maximumFractionDigits: 6})}</td>
                     <td class="loading">Fetching...</td>
                     <td class="loading">Fetching...</td>
-                    <td><button class="btn-delete" onclick="deleteAsset(${i})">Remove</button></td>
                 </tr>
             `;
         }
 
-        // Fetch live figures sequentially to prevent browser racing
+        // Populate with live asset streaming prices
         for (let i = 0; i < portfolio.length; i++) {
             const asset = portfolio[i];
             const livePrice = await fetchLivePrice(asset.symbol);
-            const positionValue = livePrice * parseFloat(asset.shares);
+            const positionValue = livePrice * asset.shares;
             
             totalNetWorth += positionValue;
             allocationTotals[asset.type] += positionValue;
@@ -164,70 +191,30 @@
         renderChart(allocationTotals);
     }
 
-    function addAsset() {
-        const symbolInput = document.getElementById('symbol');
-        const sharesInput = document.getElementById('shares');
-        const typeInput = document.getElementById('type');
-
-        const symbol = symbolInput.value.trim().toUpperCase();
-        const shares = parseFloat(sharesInput.value);
-        const type = typeInput.value;
-
-        if (symbol && shares > 0) {
-            portfolio.push({ symbol, shares, type });
-            localStorage.setItem('portfolio_assets', JSON.stringify(portfolio));
-            
-            // Reset fields
-            symbolInput.value = '';
-            sharesInput.value = '';
-            
-            updatePortfolioUI();
-        }
-    }
-
-    function deleteAsset(index) {
-        portfolio.splice(index, 1);
-        localStorage.setItem('portfolio_assets', JSON.stringify(portfolio));
-        updatePortfolioUI();
-    }
-
     function renderChart(totals) {
         const ctx = document.getElementById('allocationChart').getContext('2d');
+        if (chartInstance) chartInstance.destroy();
         
-        if (chartInstance) {
-            chartInstance.destroy();
-        }
-
-        const dataValues = Object.values(totals);
-        const hasData = dataValues.some(val => val > 0);
-
         chartInstance = new Chart(ctx, {
             type: 'doughnut',
             data: {
                 labels: Object.keys(totals),
                 datasets: [{
-                    data: hasData ? dataValues : [1, 0, 0], // structural placeholder if empty
-                    backgroundColor: hasData ? ['#0ea5e9', '#a855f7', '#eab308'] : ['#334155', '#334155', '#334155'],
-                    borderWidth: 0,
-                    hoverOffset: 4
+                    data: Object.values(totals),
+                    backgroundColor: ['#0ea5e9', '#a855f7', '#eab308'],
+                    borderWidth: 0
                 }]
             },
             options: {
                 responsive: true,
                 maintainAspectRatio: false,
-                plugins: {
-                    legend: {
-                        position: 'bottom',
-                        labels: { color: '#94a3b8', font: { family: 'inherit', size: 12 } }
-                    }
-                }
+                plugins: { legend: { position: 'bottom', labels: { color: '#94a3b8' } } }
             }
         });
     }
 
-    // Initialize display on initial DOM build
-    updatePortfolioUI();
+    // Trigger pipeline on immediate page loading sequence
+    loadRepositoryCSV();
 </script>
 </body>
 </html>
-
